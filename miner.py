@@ -3,9 +3,9 @@ import time
 import json
 import threading
 import re
-import os
-
-from solvers import SOLVERS
+import hashlib
+import base64
+import random
 
 BASE_URL = "https://bqrapnlqqtjedjyhlfci.supabase.co/functions/v1/submit-solution"
 
@@ -17,65 +17,129 @@ HEADERS = {
 }
 
 # =========================
-# MEMORY (v8 improved)
+# PERFORMANCE STATE
 # =========================
 
-MEM_FILE = "memory.json"
+stats = {}
 
-if not os.path.exists(MEM_FILE):
-    with open(MEM_FILE, "w") as f:
-        json.dump({"patterns": {}, "solved": {}}, f)
+def update_stats(agent, success):
+    if agent not in stats:
+        stats[agent] = {"ok": 0, "fail": 0}
 
-def load_mem():
-    with open(MEM_FILE) as f:
-        return json.load(f)
+    if success:
+        stats[agent]["ok"] += 1
+    else:
+        stats[agent]["fail"] += 1
 
-def save_mem(m):
-    with open(MEM_FILE, "w") as f:
-        json.dump(m, f)
-
-memory = load_mem()
-
-# =========================
-# FINGERPRINT ENGINE
-# =========================
-
-def fingerprint(text):
-    t = text.lower()
-
-    t = re.sub(r"\d+", "X", t)
-    t = re.sub(r"[0-9a-f]{6,}", "HEX", t)
-    t = re.sub(r"\s+", " ", t)
-
-    return t.strip()
+def success_rate(agent):
+    s = stats.get(agent, {"ok": 0, "fail": 0})
+    total = s["ok"] + s["fail"]
+    if total == 0:
+        return 1.0
+    return s["ok"] / total
 
 # =========================
-# SOLVER ENGINE (v8 CORE)
+# SMART BACKOFF (IMPORTANT)
+# =========================
+
+def adaptive_delay(agent):
+    rate = success_rate(agent)
+
+    if rate < 0.3:
+        return 10   # struggling → slow down
+    if rate < 0.6:
+        return 5
+    return random.uniform(1.5, 3)
+
+# =========================
+# SOLVERS
 # =========================
 
 def solve(prompt):
+    p = prompt.lower()
 
-    best = (None, 0.0)
+    # math
+    m = re.search(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", p)
+    if m:
+        a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+        return str({
+            "+": a + b,
+            "-": a - b,
+            "*": a * b,
+            "/": a // b
+        }[op]), 0.95
 
-    # memory hit first
-    fp = fingerprint(prompt)
+    # sha256 empty string
+    if "sha-256" in p and "empty string" in p:
+        return hashlib.sha256(b"").hexdigest()[:6], 0.99
 
-    if fp in memory["patterns"]:
-        return memory["patterns"][fp]
+    # entropy (bit questions)
+    if "bit" in p and "private key" in p:
+        m = re.search(r"(\d+)", p)
+        if m:
+            return f"2^{m.group(1)}", 0.92
 
-    # run all solvers
-    for solver in SOLVERS:
+    # base64
+    if "base64" in p:
         try:
-            ans, conf = solver(prompt)
-            if conf > best[1]:
-                best = (ans, conf)
+            data = re.findall(r"base64.*?:\s*(.+)", p)[0]
+            return base64.b64decode(data).decode().strip(), 0.85
         except:
-            pass
+            return None, 0.0
 
-    return best[0], best[1]
+    # hex
+    if "hex" in p:
+        try:
+            h = re.findall(r"[0-9a-fA-F]{6,}", p)[0]
+            return bytes.fromhex(h).decode(errors="ignore").strip(), 0.85
+        except:
+            return None, 0.0
+
+    # reverse
+    if "reverse" in p:
+        return prompt.split(":")[-1].strip()[::-1], 0.8
+
+    return None, 0.0
 
 # =========================
-# MINER LOOP
+# CONFIDENCE FILTER
+# =========================
+
+def should_submit(answer, confidence):
+    """
+    CORE OPTIMIZATION RULE:
+    Only submit high-confidence answers
+    """
+    if answer is None:
+        return False
+    if confidence < 0.85:
+        return False
+    if answer == "unknown":
+        return False
+    return True
+
+# =========================
+# NETWORK SAFE CALLS
+# =========================
+
+def safe_get(url):
+    for _ in range(3):
+        try:
+            return requests.get(url, headers=HEADERS, timeout=90)
+        except:
+            time.sleep(2)
+    return None
+
+def safe_post(payload):
+    for _ in range(3):
+        try:
+            return requests.post(BASE_URL, headers=HEADERS, json=payload, timeout=90)
+        except:
+            time.sleep(2)
+    return None
+
+# =========================
+# MINER LOOP (FINAL VERSION)
 # =========================
 
 def miner(agent, wallet):
@@ -85,13 +149,11 @@ def miner(agent, wallet):
     while True:
 
         try:
-            time.sleep(2)
+            time.sleep(adaptive_delay(agent))
 
-            r = requests.get(
-                f"{BASE_URL}?eth={wallet}",
-                headers=HEADERS,
-                timeout=90
-            )
+            r = safe_get(f"{BASE_URL}?eth={wallet}")
+            if not r:
+                continue
 
             data = r.json()
             puzzle = data.get("puzzle")
@@ -102,46 +164,47 @@ def miner(agent, wallet):
             pid = puzzle["id"]
             prompt = puzzle["prompt"]
 
-            ans, conf = solve(prompt)
-
             print(f"\n[{agent}] {prompt}")
-            print(f"[{agent}] answer={ans} conf={conf}")
 
-            if conf < 0.5:
-                ans = "unknown"
+            answer, conf = solve(prompt)
+
+            print(f"[{agent}] answer={answer} confidence={conf:.2f}")
+
+            # =========================
+            # OPTIMIZATION CORE
+            # =========================
+
+            if not should_submit(answer, conf):
+                print(f"[{agent}] SKIP (low confidence)")
+                continue
 
             payload = {
                 "eth_address": wallet,
                 "agent_name": agent,
                 "puzzle_id": pid,
-                "answer": ans
+                "answer": answer
             }
 
-            res = requests.post(
-                BASE_URL,
-                headers=HEADERS,
-                json=payload,
-                timeout=90
-            )
+            res = safe_post(payload)
 
-            try:
-                out = res.json()
-                print(f"[{agent}] {out}")
+            success = False
 
-                # learn successful patterns
-                if out.get("correct"):
-                    memory["patterns"][fp] = ans
-                    save_mem(memory)
+            if res:
+                try:
+                    out = res.json()
+                    success = out.get("correct", False)
+                    print(f"[{agent}] {out}")
+                except:
+                    print(res.text)
 
-            except:
-                print(res.text)
+            update_stats(agent, success)
 
         except Exception as e:
             print(f"[{agent}] ERROR:", e)
             time.sleep(5)
 
 # =========================
-# LOAD WALLETS
+# LOAD AGENTS
 # =========================
 
 with open("wallets.json") as f:
@@ -154,6 +217,7 @@ for w in wallets:
         daemon=True
     )
     t.start()
+    time.sleep(2)
 
 while True:
     time.sleep(999999)
