@@ -26,11 +26,17 @@ def normalize(text):
 # PUZZLE SOLVER
 # =========================
 
+import hashlib
+import re
+
 def solve_puzzle(prompt):
 
     p = prompt.lower()
 
-    # Basic math
+    # =========================
+    # BASIC MATH
+    # =========================
+
     math_match = re.search(r'(\d+)\s*([\+\-\*\/])\s*(\d+)', p)
 
     if math_match:
@@ -51,6 +57,34 @@ def solve_puzzle(prompt):
         elif op == "/":
             return str(a // b)
 
+    # =========================
+    # SHA256 EMPTY STRING
+    # =========================
+
+    if "sha-256 hash of the empty string" in p:
+
+        h = hashlib.sha256(b"").hexdigest()
+
+        # first 6 hex chars
+        return h[:6]
+
+    # =========================
+    # REVERSE STRING
+    # =========================
+
+    if "reverse" in p:
+
+        try:
+            text = prompt.split(":")[-1].strip()
+            return text[::-1]
+        except:
+            pass
+
+    # =========================
+    # LOWERCASE / NORMALIZE
+    # =========================
+
+    return normalize(prompt)
     # Reverse text
     if "reverse" in p:
 
