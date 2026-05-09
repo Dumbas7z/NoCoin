@@ -1,0 +1,18 @@
+[
+  {
+    "agent_name": "AgentAlpha",
+    "wallet": "0xC34c74d264c6130034E03ec1Be39cc3ecAe3063E"
+  },
+  {
+    "agent_name": "AgentBeta",
+    "wallet": "0x7d9b0B9BC7bDC7Ee670075A986B1B16664Cfac36"
+  },
+  {
+    "agent_name": "AgentGamma",
+    "wallet": "0xC8852621e76619d2d17811D11c5566E9Afa338eC"
+  },
+  {
+    "agent_name": "AgentDelta",
+    "wallet": "0x5F0c7C0b3C48879512ffb6DE8e1d8d1F60139B5B"
+  }
+]
