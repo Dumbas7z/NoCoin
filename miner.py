@@ -3,14 +3,13 @@ import time
 import json
 import threading
 import re
-import hashlib
-import base64
-import random
 import os
+
+from solvers import SOLVERS
 
 BASE_URL = "https://bqrapnlqqtjedjyhlfci.supabase.co/functions/v1/submit-solution"
 
-API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJxcmFwbmxxcXRqZWRqeWhsZmNpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgyNzUyNjQsImV4cCI6MjA5Mzg1MTI2NH0.mf0fz6kAnK0yeAXrb-XT6yikbdRmeAq5jsikVPPhaFE"
+API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
 
 HEADERS = {
     "apikey": API_KEY,
@@ -18,157 +17,65 @@ HEADERS = {
 }
 
 # =========================
-# LOAD MEMORY (LEARNING CORE)
+# MEMORY (v8 improved)
 # =========================
 
 MEM_FILE = "memory.json"
 
 if not os.path.exists(MEM_FILE):
     with open(MEM_FILE, "w") as f:
-        json.dump({"patterns": {}, "rules_learned": {}}, f)
+        json.dump({"patterns": {}, "solved": {}}, f)
 
 def load_mem():
     with open(MEM_FILE) as f:
         return json.load(f)
 
-def save_mem(mem):
+def save_mem(m):
     with open(MEM_FILE, "w") as f:
-        json.dump(mem, f)
+        json.dump(m, f)
 
 memory = load_mem()
 
 # =========================
-# SAFE NETWORK
+# FINGERPRINT ENGINE
 # =========================
 
-def safe_get(url):
-    for _ in range(3):
-        try:
-            return requests.get(url, headers=HEADERS, timeout=90)
-        except:
-            time.sleep(2)
-    return None
+def fingerprint(text):
+    t = text.lower()
 
-def safe_post(payload):
-    for _ in range(3):
-        try:
-            return requests.post(BASE_URL, headers=HEADERS, json=payload, timeout=90)
-        except:
-            time.sleep(2)
-    return None
+    t = re.sub(r"\d+", "X", t)
+    t = re.sub(r"[0-9a-f]{6,}", "HEX", t)
+    t = re.sub(r"\s+", " ", t)
+
+    return t.strip()
 
 # =========================
-# PATTERN LEARNER
-# =========================
-
-def learn(prompt, answer, success):
-
-    key = prompt.lower()
-
-    if success:
-        memory["patterns"][key] = answer
-        save_mem(memory)
-
-# =========================
-# SMART CLASSIFIER (v7)
-# =========================
-
-def classify(prompt):
-    p = prompt.lower()
-
-    # learned patterns first
-    if p in memory["patterns"]:
-        return "memory"
-
-    if "sha-256" in p:
-        return "sha256"
-
-    if re.search(r"\d+\s*bit", p):
-        return "entropy"
-
-    if re.search(r"\d+\s*[\+\-\*\/]\s*\d+", p):
-        return "math"
-
-    if "base64" in p:
-        return "base64"
-
-    if "hex" in p:
-        return "hex"
-
-    if "reverse" in p:
-        return "reverse"
-
-    return "unknown"
-
-# =========================
-# SOLVER ENGINE
+# SOLVER ENGINE (v8 CORE)
 # =========================
 
 def solve(prompt):
 
-    p = prompt.lower()
-    c = classify(prompt)
+    best = (None, 0.0)
 
-    # ---------------- MEMORY HIT ----------------
-    if c == "memory":
-        return memory["patterns"][p]
+    # memory hit first
+    fp = fingerprint(prompt)
 
-    # ---------------- MATH ----------------
-    if c == "math":
-        a, op, b = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", p)[0]
-        a, b = int(a), int(b)
-        return str({
-            "+": a + b,
-            "-": a - b,
-            "*": a * b,
-            "/": a // b
-        }[op])
+    if fp in memory["patterns"]:
+        return memory["patterns"][fp]
 
-    # ---------------- SHA256 ----------------
-    if c == "sha256":
-        return hashlib.sha256(b"").hexdigest()[:6]
-
-    # ---------------- ENTROPY LEARNED RULE ----------------
-    if c == "entropy":
-        m = re.search(r"(\d+)", p)
-        if m:
-            return f"2^{m.group(1)}"
-
-    # ---------------- BASE64 ----------------
-    if c == "base64":
+    # run all solvers
+    for solver in SOLVERS:
         try:
-            data = re.findall(r"base64.*?:\s*(.+)", p)[0]
-            return base64.b64decode(data).decode().strip()
+            ans, conf = solver(prompt)
+            if conf > best[1]:
+                best = (ans, conf)
         except:
             pass
 
-    # ---------------- HEX ----------------
-    if c == "hex":
-        try:
-            h = re.findall(r"[0-9a-fA-F]{6,}", p)[0]
-            return bytes.fromhex(h).decode(errors="ignore").strip()
-        except:
-            pass
-
-    # ---------------- REVERSE ----------------
-    if c == "reverse":
-        return prompt.split(":")[-1].strip()[::-1]
-
-    return None
+    return best[0], best[1]
 
 # =========================
-# CONFIDENCE SYSTEM
-# =========================
-
-def confidence(answer):
-    if answer is None:
-        return 0.0
-    if answer == "unknown":
-        return 0.2
-    return 0.9
-
-# =========================
-# MINER LOOP (SELF-LEARNING)
+# MINER LOOP
 # =========================
 
 def miner(agent, wallet):
@@ -178,11 +85,13 @@ def miner(agent, wallet):
     while True:
 
         try:
-            time.sleep(random.uniform(2, 5))
+            time.sleep(2)
 
-            r = safe_get(f"{BASE_URL}?eth={wallet}")
-            if not r:
-                continue
+            r = requests.get(
+                f"{BASE_URL}?eth={wallet}",
+                headers=HEADERS,
+                timeout=90
+            )
 
             data = r.json()
             puzzle = data.get("puzzle")
@@ -193,43 +102,46 @@ def miner(agent, wallet):
             pid = puzzle["id"]
             prompt = puzzle["prompt"]
 
+            ans, conf = solve(prompt)
+
             print(f"\n[{agent}] {prompt}")
+            print(f"[{agent}] answer={ans} conf={conf}")
 
-            answer = solve(prompt)
-            conf = confidence(answer)
-
-            # AI fallback only if low confidence
             if conf < 0.5:
-                answer = "unknown"
+                ans = "unknown"
 
             payload = {
                 "eth_address": wallet,
                 "agent_name": agent,
                 "puzzle_id": pid,
-                "answer": answer
+                "answer": ans
             }
 
-            res = safe_post(payload)
+            res = requests.post(
+                BASE_URL,
+                headers=HEADERS,
+                json=payload,
+                timeout=90
+            )
 
-            success = False
+            try:
+                out = res.json()
+                print(f"[{agent}] {out}")
 
-            if res:
-                try:
-                    out = res.json()
-                    success = out.get("correct", False)
-                    print(f"[{agent}] {out}")
-                except:
-                    print(f"[{agent}] RAW:", res.text)
+                # learn successful patterns
+                if out.get("correct"):
+                    memory["patterns"][fp] = ans
+                    save_mem(memory)
 
-            # ---------------- LEARNING STEP ----------------
-            learn(prompt, answer, success)
+            except:
+                print(res.text)
 
         except Exception as e:
             print(f"[{agent}] ERROR:", e)
             time.sleep(5)
 
 # =========================
-# LOAD AGENTS
+# LOAD WALLETS
 # =========================
 
 with open("wallets.json") as f:
@@ -242,7 +154,6 @@ for w in wallets:
         daemon=True
     )
     t.start()
-    time.sleep(2)
 
 while True:
     time.sleep(999999)
