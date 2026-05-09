@@ -6,6 +6,7 @@ import re
 import hashlib
 import base64
 import random
+import os
 
 BASE_URL = "https://bqrapnlqqtjedjyhlfci.supabase.co/functions/v1/submit-solution"
 
@@ -17,28 +18,42 @@ HEADERS = {
 }
 
 # =========================
-# SAFE NETWORK
+# LOAD STATE (MEMORY)
 # =========================
 
-def safe_get(url):
-    for _ in range(3):
-        try:
-            return requests.get(url, headers=HEADERS, timeout=90)
-        except:
-            time.sleep(2)
-    return None
+STATE_FILE = "state.json"
 
+if not os.path.exists(STATE_FILE):
+    with open(STATE_FILE, "w") as f:
+        json.dump({"solved": {}}, f)
 
-def safe_post(payload):
-    for _ in range(3):
-        try:
-            return requests.post(BASE_URL, headers=HEADERS, json=payload, timeout=90)
-        except:
-            time.sleep(2)
-    return None
+def load_state():
+    with open(STATE_FILE, "r") as f:
+        return json.load(f)
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+state = load_state()
 
 # =========================
-# CLASSIFIER (NEW v5 CORE)
+# ADAPTIVE SPEED CONTROL
+# =========================
+
+def get_delay(agent):
+    fail = state.get("fail_count", {}).get(agent, 0)
+    base = 2.0
+
+    if fail > 5:
+        return 10
+    if fail > 2:
+        return 5
+
+    return base + random.uniform(0, 2)
+
+# =========================
+# CLASSIFIER (same core)
 # =========================
 
 def classify(prompt):
@@ -65,15 +80,13 @@ def classify(prompt):
     return "unknown"
 
 # =========================
-# SOLVERS
+# SOLVER
 # =========================
 
 def solve(prompt):
-
     ptype = classify(prompt)
     p = prompt.lower()
 
-    # ---- MATH ----
     if ptype == "math":
         a, op, b = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", p)[0]
         a, b = int(a), int(b)
@@ -84,17 +97,14 @@ def solve(prompt):
             "/": a // b
         }[op])
 
-    # ---- SHA256 ----
     if ptype == "sha256":
         return hashlib.sha256(b"").hexdigest()[:6]
 
-    # ---- ENTROPY ----
     if ptype == "entropy":
         m = re.search(r"(\d+)", p)
         if m:
             return f"2^{m.group(1)}"
 
-    # ---- BASE64 ----
     if ptype == "base64":
         try:
             data = re.findall(r"base64.*?:\s*(.+)", p)[0]
@@ -102,7 +112,6 @@ def solve(prompt):
         except:
             pass
 
-    # ---- HEX ----
     if ptype == "hex":
         try:
             h = re.findall(r"[0-9a-fA-F]{6,}", p)[0]
@@ -110,46 +119,44 @@ def solve(prompt):
         except:
             pass
 
-    # ---- REVERSE ----
     if ptype == "reverse":
         return prompt.split(":")[-1].strip()[::-1]
 
     return None
 
 # =========================
-# AI FALLBACK (OPTIONAL)
+# SAFE REQUESTS
 # =========================
 
-def ai_solve(prompt):
-    """
-    Optional: local AI via Ollama
-    """
-    try:
-        r = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": "llama3",
-                "prompt": f"Solve this puzzle. Return only answer:\n{prompt}",
-                "stream": False
-            },
-            timeout=60
-        )
-        return r.json()["response"].strip()
-    except:
-        return "unknown"
+def safe_get(url):
+    for _ in range(3):
+        try:
+            return requests.get(url, headers=HEADERS, timeout=90)
+        except:
+            time.sleep(2)
+    return None
+
+def safe_post(payload):
+    for _ in range(3):
+        try:
+            return requests.post(BASE_URL, headers=HEADERS, json=payload, timeout=90)
+        except:
+            time.sleep(2)
+    return None
 
 # =========================
-# MINER LOOP
+# MINER LOOP (v6 CORE)
 # =========================
 
-def miner(name, wallet):
+def miner(agent, wallet):
 
-    print(f"[START] {name}")
+    print(f"[START] {agent}")
 
     while True:
 
         try:
-            time.sleep(random.uniform(2, 5))
+
+            time.sleep(get_delay(agent))
 
             r = safe_get(f"{BASE_URL}?eth={wallet}")
             if not r:
@@ -159,23 +166,30 @@ def miner(name, wallet):
             puzzle = data.get("puzzle")
 
             if not puzzle:
-                time.sleep(10)
+                continue
+
+            pid = puzzle["id"]
+
+            # =========================
+            # MEMORY CHECK (NO REPEAT)
+            # =========================
+
+            if pid in state["solved"]:
                 continue
 
             prompt = puzzle["prompt"]
-            pid = puzzle["id"]
 
-            print(f"\n[{name}] {prompt}")
+            print(f"\n[{agent}] {prompt}")
 
             answer = solve(prompt)
 
-            # AI fallback ONLY if needed
-            if not answer or answer == "unknown":
-                answer = ai_solve(prompt)
+            # fallback AI only if unknown
+            if not answer:
+                answer = "unknown"
 
             payload = {
                 "eth_address": wallet,
-                "agent_name": name,
+                "agent_name": agent,
                 "puzzle_id": pid,
                 "answer": answer
             }
@@ -183,14 +197,29 @@ def miner(name, wallet):
             res = safe_post(payload)
 
             if res:
-                print(f"[{name}] {res.json()}")
+
+                try:
+                    out = res.json()
+                except:
+                    out = {}
+
+                print(f"[{agent}] {out}")
+
+                if out.get("correct"):
+                    state["solved"][pid] = True
+                    state["fail_count"][agent] = 0
+
+                else:
+                    state["fail_count"][agent] = state.get("fail_count", {}).get(agent, 0) + 1
+
+                save_state(state)
 
         except Exception as e:
-            print(f"[{name}] ERROR:", e)
+            print(f"[{agent}] ERROR:", e)
             time.sleep(5)
 
 # =========================
-# LOAD WALLETS
+# LOAD AGENTS
 # =========================
 
 with open("wallets.json") as f:
