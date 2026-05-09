@@ -18,114 +18,27 @@ HEADERS = {
 }
 
 # =========================
-# LOAD STATE (MEMORY)
+# LOAD MEMORY (LEARNING CORE)
 # =========================
 
-STATE_FILE = "state.json"
+MEM_FILE = "memory.json"
 
-if not os.path.exists(STATE_FILE):
-    with open(STATE_FILE, "w") as f:
-        json.dump({"solved": {}}, f)
+if not os.path.exists(MEM_FILE):
+    with open(MEM_FILE, "w") as f:
+        json.dump({"patterns": {}, "rules_learned": {}}, f)
 
-def load_state():
-    with open(STATE_FILE, "r") as f:
+def load_mem():
+    with open(MEM_FILE) as f:
         return json.load(f)
 
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+def save_mem(mem):
+    with open(MEM_FILE, "w") as f:
+        json.dump(mem, f)
 
-state = load_state()
-
-# =========================
-# ADAPTIVE SPEED CONTROL
-# =========================
-
-def get_delay(agent):
-    fail = state.get("fail_count", {}).get(agent, 0)
-    base = 2.0
-
-    if fail > 5:
-        return 10
-    if fail > 2:
-        return 5
-
-    return base + random.uniform(0, 2)
+memory = load_mem()
 
 # =========================
-# CLASSIFIER (same core)
-# =========================
-
-def classify(prompt):
-    p = prompt.lower()
-
-    if "sha-256" in p:
-        return "sha256"
-
-    if re.search(r"\d+\s*[\+\-\*\/]\s*\d+", p):
-        return "math"
-
-    if "256" in p and "private key" in p:
-        return "entropy"
-
-    if "base64" in p:
-        return "base64"
-
-    if "hex" in p:
-        return "hex"
-
-    if "reverse" in p:
-        return "reverse"
-
-    return "unknown"
-
-# =========================
-# SOLVER
-# =========================
-
-def solve(prompt):
-    ptype = classify(prompt)
-    p = prompt.lower()
-
-    if ptype == "math":
-        a, op, b = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", p)[0]
-        a, b = int(a), int(b)
-        return str({
-            "+": a + b,
-            "-": a - b,
-            "*": a * b,
-            "/": a // b
-        }[op])
-
-    if ptype == "sha256":
-        return hashlib.sha256(b"").hexdigest()[:6]
-
-    if ptype == "entropy":
-        m = re.search(r"(\d+)", p)
-        if m:
-            return f"2^{m.group(1)}"
-
-    if ptype == "base64":
-        try:
-            data = re.findall(r"base64.*?:\s*(.+)", p)[0]
-            return base64.b64decode(data).decode().strip()
-        except:
-            pass
-
-    if ptype == "hex":
-        try:
-            h = re.findall(r"[0-9a-fA-F]{6,}", p)[0]
-            return bytes.fromhex(h).decode(errors="ignore").strip()
-        except:
-            pass
-
-    if ptype == "reverse":
-        return prompt.split(":")[-1].strip()[::-1]
-
-    return None
-
-# =========================
-# SAFE REQUESTS
+# SAFE NETWORK
 # =========================
 
 def safe_get(url):
@@ -145,7 +58,117 @@ def safe_post(payload):
     return None
 
 # =========================
-# MINER LOOP (v6 CORE)
+# PATTERN LEARNER
+# =========================
+
+def learn(prompt, answer, success):
+
+    key = prompt.lower()
+
+    if success:
+        memory["patterns"][key] = answer
+        save_mem(memory)
+
+# =========================
+# SMART CLASSIFIER (v7)
+# =========================
+
+def classify(prompt):
+    p = prompt.lower()
+
+    # learned patterns first
+    if p in memory["patterns"]:
+        return "memory"
+
+    if "sha-256" in p:
+        return "sha256"
+
+    if re.search(r"\d+\s*bit", p):
+        return "entropy"
+
+    if re.search(r"\d+\s*[\+\-\*\/]\s*\d+", p):
+        return "math"
+
+    if "base64" in p:
+        return "base64"
+
+    if "hex" in p:
+        return "hex"
+
+    if "reverse" in p:
+        return "reverse"
+
+    return "unknown"
+
+# =========================
+# SOLVER ENGINE
+# =========================
+
+def solve(prompt):
+
+    p = prompt.lower()
+    c = classify(prompt)
+
+    # ---------------- MEMORY HIT ----------------
+    if c == "memory":
+        return memory["patterns"][p]
+
+    # ---------------- MATH ----------------
+    if c == "math":
+        a, op, b = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", p)[0]
+        a, b = int(a), int(b)
+        return str({
+            "+": a + b,
+            "-": a - b,
+            "*": a * b,
+            "/": a // b
+        }[op])
+
+    # ---------------- SHA256 ----------------
+    if c == "sha256":
+        return hashlib.sha256(b"").hexdigest()[:6]
+
+    # ---------------- ENTROPY LEARNED RULE ----------------
+    if c == "entropy":
+        m = re.search(r"(\d+)", p)
+        if m:
+            return f"2^{m.group(1)}"
+
+    # ---------------- BASE64 ----------------
+    if c == "base64":
+        try:
+            data = re.findall(r"base64.*?:\s*(.+)", p)[0]
+            return base64.b64decode(data).decode().strip()
+        except:
+            pass
+
+    # ---------------- HEX ----------------
+    if c == "hex":
+        try:
+            h = re.findall(r"[0-9a-fA-F]{6,}", p)[0]
+            return bytes.fromhex(h).decode(errors="ignore").strip()
+        except:
+            pass
+
+    # ---------------- REVERSE ----------------
+    if c == "reverse":
+        return prompt.split(":")[-1].strip()[::-1]
+
+    return None
+
+# =========================
+# CONFIDENCE SYSTEM
+# =========================
+
+def confidence(answer):
+    if answer is None:
+        return 0.0
+    if answer == "unknown":
+        return 0.2
+    return 0.9
+
+# =========================
+# MINER LOOP (SELF-LEARNING)
 # =========================
 
 def miner(agent, wallet):
@@ -155,8 +178,7 @@ def miner(agent, wallet):
     while True:
 
         try:
-
-            time.sleep(get_delay(agent))
+            time.sleep(random.uniform(2, 5))
 
             r = safe_get(f"{BASE_URL}?eth={wallet}")
             if not r:
@@ -169,22 +191,15 @@ def miner(agent, wallet):
                 continue
 
             pid = puzzle["id"]
-
-            # =========================
-            # MEMORY CHECK (NO REPEAT)
-            # =========================
-
-            if pid in state["solved"]:
-                continue
-
             prompt = puzzle["prompt"]
 
             print(f"\n[{agent}] {prompt}")
 
             answer = solve(prompt)
+            conf = confidence(answer)
 
-            # fallback AI only if unknown
-            if not answer:
+            # AI fallback only if low confidence
+            if conf < 0.5:
                 answer = "unknown"
 
             payload = {
@@ -196,23 +211,18 @@ def miner(agent, wallet):
 
             res = safe_post(payload)
 
-            if res:
+            success = False
 
+            if res:
                 try:
                     out = res.json()
+                    success = out.get("correct", False)
+                    print(f"[{agent}] {out}")
                 except:
-                    out = {}
+                    print(f"[{agent}] RAW:", res.text)
 
-                print(f"[{agent}] {out}")
-
-                if out.get("correct"):
-                    state["solved"][pid] = True
-                    state["fail_count"][agent] = 0
-
-                else:
-                    state["fail_count"][agent] = state.get("fail_count", {}).get(agent, 0) + 1
-
-                save_state(state)
+            # ---------------- LEARNING STEP ----------------
+            learn(prompt, answer, success)
 
         except Exception as e:
             print(f"[{agent}] ERROR:", e)
