@@ -26,75 +26,42 @@ def normalize(text):
 # PUZZLE SOLVER
 # =========================
 
-import hashlib
-import re
-
 def solve_puzzle(prompt):
 
     p = prompt.lower()
 
-    # =========================
-    # BASIC MATH
-    # =========================
-
+    # math
     math_match = re.search(r'(\d+)\s*([\+\-\*\/])\s*(\d+)', p)
-
     if math_match:
-
         a = int(math_match.group(1))
         op = math_match.group(2)
         b = int(math_match.group(3))
 
         if op == "+":
             return str(a + b)
-
         elif op == "-":
             return str(a - b)
-
         elif op == "*":
             return str(a * b)
-
         elif op == "/":
             return str(a // b)
 
-    # =========================
-    # SHA256 EMPTY STRING
-    # =========================
-
+    # SHA-256 empty string
     if "sha-256 hash of the empty string" in p:
+        import hashlib
+        return hashlib.sha256(b"").hexdigest()[:6]
 
-        h = hashlib.sha256(b"").hexdigest()
+    # 256-bit keyspace question
+    if "256-bit private keys" in p:
+        return "2^256"
 
-        # first 6 hex chars
-        return h[:6]
-
-    # =========================
-    # REVERSE STRING
-    # =========================
-
+    # reverse
     if "reverse" in p:
-
         try:
-            text = prompt.split(":")[-1].strip()
-            return text[::-1]
+            return prompt.split(":")[-1].strip()[::-1]
         except:
             pass
 
-    # =========================
-    # LOWERCASE / NORMALIZE
-    # =========================
-
-    return normalize(prompt)
-    # Reverse text
-    if "reverse" in p:
-
-        try:
-            text = prompt.split(":")[-1].strip()
-            return text[::-1]
-        except:
-            pass
-
-    # Fallback
     return normalize(prompt)
 
 # =========================
