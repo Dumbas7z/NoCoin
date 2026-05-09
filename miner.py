@@ -17,40 +17,66 @@ HEADERS = {
 }
 
 # =========================
-# SAFE REQUESTS
+# SAFE NETWORK
 # =========================
 
-def safe_get(url, headers):
+def safe_get(url):
     for _ in range(3):
         try:
-            return requests.get(url, headers=headers, timeout=90)
+            return requests.get(url, headers=HEADERS, timeout=90)
         except:
             time.sleep(2)
     return None
 
 
-def safe_post(url, headers, payload):
+def safe_post(payload):
     for _ in range(3):
         try:
-            return requests.post(url, headers=headers, json=payload, timeout=90)
+            return requests.post(BASE_URL, headers=HEADERS, json=payload, timeout=90)
         except:
             time.sleep(2)
     return None
 
+# =========================
+# CLASSIFIER (NEW v5 CORE)
+# =========================
+
+def classify(prompt):
+    p = prompt.lower()
+
+    if "sha-256" in p:
+        return "sha256"
+
+    if re.search(r"\d+\s*[\+\-\*\/]\s*\d+", p):
+        return "math"
+
+    if "256" in p and "private key" in p:
+        return "entropy"
+
+    if "base64" in p:
+        return "base64"
+
+    if "hex" in p:
+        return "hex"
+
+    if "reverse" in p:
+        return "reverse"
+
+    return "unknown"
 
 # =========================
-# CORE SOLVER ENGINE
+# SOLVERS
 # =========================
 
-def solve_puzzle(prompt):
-    p = prompt.lower().strip()
+def solve(prompt):
 
-    # -------------------------
-    # 1. BASIC ARITHMETIC
-    # -------------------------
-    m = re.search(r'(\d+)\s*([\+\-\*\/])\s*(\d+)', p)
-    if m:
-        a, op, b = int(m.group(1)), m.group(2), int(m.group(3))
+    ptype = classify(prompt)
+    p = prompt.lower()
+
+    # ---- MATH ----
+    if ptype == "math":
+        a, op, b = re.findall(r"(\d+)\s*([\+\-\*\/])\s*(\d+)", p)[0]
+        a, b = int(a), int(b)
         return str({
             "+": a + b,
             "-": a - b,
@@ -58,82 +84,74 @@ def solve_puzzle(prompt):
             "/": a // b
         }[op])
 
-    # -------------------------
-    # 2. SHA256 EMPTY STRING
-    # -------------------------
-    if "sha-256" in p and "empty string" in p:
+    # ---- SHA256 ----
+    if ptype == "sha256":
         return hashlib.sha256(b"").hexdigest()[:6]
 
-    # -------------------------
-    # 3. 256-BIT KEYSPACE (SEMANTIC)
-    # -------------------------
-    if re.search(r"256[- ]bit", p) and "private key" in p:
-        return "2^256"
+    # ---- ENTROPY ----
+    if ptype == "entropy":
+        m = re.search(r"(\d+)", p)
+        if m:
+            return f"2^{m.group(1)}"
 
-    if "how many possible" in p and "256" in p and "power of 2" in p:
-        return "2^256"
-
-    # -------------------------
-    # 4. GENERAL ENTROPY QUESTIONS
-    # -------------------------
-    if "how many possible" in p and "bit" in p:
-        bits = re.search(r"(\d+)\s*bit", p)
-        if bits:
-            n = int(bits.group(1))
-            return f"2^{n}"
-
-    # -------------------------
-    # 5. BASE64 DECODE
-    # -------------------------
-    if "base64 decode" in p:
+    # ---- BASE64 ----
+    if ptype == "base64":
         try:
-            match = re.search(r'base64.*?:\s*(.+)', p)
-            if match:
-                return base64.b64decode(match.group(1)).decode().strip()
+            data = re.findall(r"base64.*?:\s*(.+)", p)[0]
+            return base64.b64decode(data).decode().strip()
         except:
             pass
 
-    # -------------------------
-    # 6. HEX DECODE
-    # -------------------------
-    if "hex" in p and "decode" in p:
+    # ---- HEX ----
+    if ptype == "hex":
         try:
-            match = re.findall(r'([0-9a-fA-F]{6,})', p)
-            if match:
-                return bytes.fromhex(match[0]).decode(errors="ignore").strip()
+            h = re.findall(r"[0-9a-fA-F]{6,}", p)[0]
+            return bytes.fromhex(h).decode(errors="ignore").strip()
         except:
             pass
 
-    # -------------------------
-    # 7. REVERSE STRING
-    # -------------------------
-    if "reverse" in p:
-        try:
-            return prompt.split(":")[-1].strip()[::-1]
-        except:
-            pass
+    # ---- REVERSE ----
+    if ptype == "reverse":
+        return prompt.split(":")[-1].strip()[::-1]
 
-    # -------------------------
-    # 8. FALLBACK (SAFE GUESSING)
-    # -------------------------
-    return "unknown"
+    return None
 
+# =========================
+# AI FALLBACK (OPTIONAL)
+# =========================
+
+def ai_solve(prompt):
+    """
+    Optional: local AI via Ollama
+    """
+    try:
+        r = requests.post(
+            "http://localhost:11434/api/generate",
+            json={
+                "model": "llama3",
+                "prompt": f"Solve this puzzle. Return only answer:\n{prompt}",
+                "stream": False
+            },
+            timeout=60
+        )
+        return r.json()["response"].strip()
+    except:
+        return "unknown"
 
 # =========================
 # MINER LOOP
 # =========================
 
-def miner_loop(agent_name, wallet):
+def miner(name, wallet):
 
-    print(f"[START] {agent_name}")
+    print(f"[START] {name}")
 
     while True:
 
         try:
             time.sleep(random.uniform(2, 5))
 
-            r = safe_get(f"{BASE_URL}?eth={wallet}", HEADERS)
-
+            r = safe_get(f"{BASE_URL}?eth={wallet}")
             if not r:
                 continue
 
@@ -144,56 +162,48 @@ def miner_loop(agent_name, wallet):
                 time.sleep(10)
                 continue
 
-            pid = puzzle["id"]
             prompt = puzzle["prompt"]
+            pid = puzzle["id"]
 
-            print(f"\n[{agent_name}] PUZZLE:", pid)
-            print(f"[{agent_name}] PROMPT:", prompt)
+            print(f"\n[{name}] {prompt}")
 
-            answer = solve_puzzle(prompt)
+            answer = solve(prompt)
+
+            # AI fallback ONLY if needed
+            if not answer or answer == "unknown":
+                answer = ai_solve(prompt)
 
             payload = {
                 "eth_address": wallet,
-                "agent_name": agent_name,
+                "agent_name": name,
                 "puzzle_id": pid,
                 "answer": answer
             }
 
-            r2 = safe_post(BASE_URL, HEADERS, payload)
+            res = safe_post(payload)
 
-            if r2:
-                try:
-                    print(f"[{agent_name}] RESULT:", r2.json())
-                except:
-                    print(f"[{agent_name}] RAW:", r2.text)
+            if res:
+                print(f"[{name}] {res.json()}")
 
         except Exception as e:
-            print(f"[{agent_name}] ERROR:", e)
+            print(f"[{name}] ERROR:", e)
             time.sleep(5)
-
 
 # =========================
 # LOAD WALLETS
 # =========================
 
-with open("wallets.json", "r") as f:
+with open("wallets.json") as f:
     wallets = json.load(f)
-
-
-# =========================
-# START AGENTS
-# =========================
 
 for w in wallets:
     t = threading.Thread(
-        target=miner_loop,
+        target=miner,
         args=(w["agent_name"], w["wallet"]),
         daemon=True
     )
     t.start()
     time.sleep(2)
 
-
-# KEEP ALIVE
 while True:
     time.sleep(999999)
